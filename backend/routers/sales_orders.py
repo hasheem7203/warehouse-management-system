@@ -38,38 +38,52 @@ def get_sales_orders(current_user: dict = Depends(require_logistics)):
         conn.close()
 
 @router.get("/{so_id}")
-def get_sales_order(so_id: int,current_user: dict = Depends(require_logistics)):
+def get_sales_order(so_id: int, current_user: dict = Depends(require_logistics)):
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        # Header separately
         cursor.execute("""
-            SELECT so_id, customer_name, created_by, so_status,
-                   payment_status, item_name, ordered_quantity,
-                   shipped_quantity, pending_quantity, unit_price,
-                   line_total, uom_symbol
-            FROM vw_sales_order_full
-            WHERE so_id = %s
+            SELECT so.so_id, c.customer_name, u.username,
+                   so.status, so.payment_status
+            FROM sales_orders so
+            JOIN customers c ON c.customer_id = so.customer_id
+            JOIN users u ON u.user_id = so.created_by
+            WHERE so.so_id = %s
         """, (so_id,))
-        rows = cursor.fetchall()
-        if not rows:
-            raise HTTPException(status_code=404, detail=f"Sales Order {so_id} not found")
+        header = cursor.fetchone()
+        if not header:
+            raise HTTPException(status_code=404, detail=f"SO {so_id} not found")
+
+        # Lines separately
+        cursor.execute("""
+            SELECT i.item_name, sol.ordered_quantity, sol.shipped_quantity,
+                   sol.pending_quantity, sol.unit_price, sol.line_total, u.uom_symbol
+            FROM sales_order_lines sol
+            JOIN items i ON i.item_id = sol.item_id
+            JOIN unit_of_measure u ON u.uom_id = i.uom_id
+            WHERE sol.so_id = %s
+            ORDER BY sol.so_line_id ASC
+        """, (so_id,))
+        lines = cursor.fetchall()
+
         return {
-            "so_id":          rows[0][0],
-            "customer_name":  rows[0][1],
-            "created_by":     rows[0][2],
-            "status":         rows[0][3],
-            "payment_status": rows[0][4],
+            "so_id":          header[0],
+            "customer_name":  header[1],
+            "created_by":     header[2],
+            "status":         header[3],
+            "payment_status": header[4],
             "lines": [
                 {
-                    "item_name":        row[5],
-                    "ordered_quantity": row[6],
-                    "shipped_quantity": row[7],
-                    "pending_quantity": row[8],
-                    "unit_price":       row[9],
-                    "line_total":       row[10],
-                    "uom_symbol":       row[11]
+                    "item_name":        row[0],
+                    "ordered_quantity": row[1],
+                    "shipped_quantity": row[2],
+                    "pending_quantity": row[3],
+                    "unit_price":       row[4],
+                    "line_total":       row[5],
+                    "uom_symbol":       row[6]
                 }
-                for row in rows
+                for row in lines
             ]
         }
     except psycopg2.Error as e:
@@ -77,7 +91,7 @@ def get_sales_order(so_id: int,current_user: dict = Depends(require_logistics)):
     finally:
         cursor.close()
         conn.close()
-
+        
 @router.post("/")
 def create_sales_order(so: SalesOrderCreate,current_user: dict = Depends(require_logistics)):
     conn = get_connection()

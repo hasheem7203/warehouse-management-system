@@ -41,38 +41,53 @@ def get_delivery_challans(current_user: dict = Depends(require_logistics)):
         conn.close()
 
 @router.get("/{dc_id}")
-def get_delivery_challan(dc_id: int,current_user: dict = Depends(require_logistics)):
+def get_delivery_challan(dc_id: int, current_user: dict = Depends(require_logistics)):
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        # Header separately
         cursor.execute("""
-            SELECT dc_id, so_id, customer_name, created_by,
-                   dc_status, driver_name, vehicle_number,
-                   item_name, shipped_quantity, uom_symbol,
-                   dispatched_at, delivered_at
-            FROM vw_delivery_challan_full
-            WHERE dc_id = %s
+            SELECT dc.dc_id, dc.so_id, c.customer_name, u.username,
+                   dc.status, dc.driver_name, dc.vehicle_number,
+                   dc.dispatched_at, dc.delivered_at
+            FROM delivery_challans dc
+            JOIN sales_orders so ON so.so_id = dc.so_id
+            JOIN customers c ON c.customer_id = so.customer_id
+            JOIN users u ON u.user_id = dc.created_by
+            WHERE dc.dc_id = %s
         """, (dc_id,))
-        rows = cursor.fetchall()
-        if not rows:
-            raise HTTPException(status_code=404, detail=f"Delivery Challan {dc_id} not found")
+        header = cursor.fetchone()
+        if not header:
+            raise HTTPException(status_code=404, detail=f"DC {dc_id} not found")
+
+        # Lines separately
+        cursor.execute("""
+            SELECT i.item_name, dcl.shipped_quantity, u.uom_symbol
+            FROM delivery_challan_lines dcl
+            JOIN items i ON i.item_id = dcl.item_id
+            JOIN unit_of_measure u ON u.uom_id = i.uom_id
+            WHERE dcl.dc_id = %s
+            ORDER BY dcl.dc_line_id ASC
+        """, (dc_id,))
+        lines = cursor.fetchall()
+
         return {
-            "dc_id":          rows[0][0],
-            "so_id":          rows[0][1],
-            "customer_name":  rows[0][2],
-            "created_by":     rows[0][3],
-            "status":         rows[0][4],
-            "driver_name":    rows[0][5],
-            "vehicle_number": rows[0][6],
-            "dispatched_at":  str(rows[0][10]) if rows[0][10] else None,
-            "delivered_at":   str(rows[0][11]) if rows[0][11] else None,
+            "dc_id":          header[0],
+            "so_id":          header[1],
+            "customer_name":  header[2],
+            "created_by":     header[3],
+            "status":         header[4],
+            "driver_name":    header[5],
+            "vehicle_number": header[6],
+            "dispatched_at":  str(header[7]) if header[7] else None,
+            "delivered_at":   str(header[8]) if header[8] else None,
             "lines": [
                 {
-                    "item_name":        row[7],
-                    "shipped_quantity": row[8],
-                    "uom_symbol":       row[9]
+                    "item_name":        row[0],
+                    "shipped_quantity": row[1],
+                    "uom_symbol":       row[2]
                 }
-                for row in rows
+                for row in lines
             ]
         }
     except psycopg2.Error as e:
